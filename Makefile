@@ -1,4 +1,4 @@
-REGISTRY_NAMESPACE ?= nuancemobility
+REGISTRY_NAMESPACE ?= cerence
 IMAGE_NAME := $(REGISTRY_NAMESPACE)/azure-request-limitometer
 TAG ?= "dev"
 
