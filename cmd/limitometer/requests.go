@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/go-autorest/autorest"
 )
@@ -24,14 +26,36 @@ var subIDReadsHeader = "SubIDReads"
 func getRequestsRemaining(nodename string) (requestsRemaining map[string]int) {
 	requestsRemaining = make(map[string]int)
 
-	responses := []autorest.Response{
-		azureClient.GetVM(nodename).Response,
-		azureClient.GetAllVM().Response().Response,
-		azureClient.PutVM(nodename),
-		azureClient.GetNicFromVMName(nodename).Response,
-		azureClient.GetAllNics().Response().Response,
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	Getvm, err := azureClient.GetVM(ctx, nodename)
+	if err != nil {
+		log.Printf("failed to get vm: %s\n", err)
 	}
 
+	Getnic, err := azureClient.GetNicFromVMName(nodename)
+	if err != nil {
+		log.Printf("failed to get nic: %s\n", err)
+	}
+
+	GetAllVM := azureClient.GetAllVM()
+	PutVM := azureClient.PutVM(nodename)
+	GetAllNic := azureClient.GetAllNics()
+	Getlb, err := azureClient.GetAllLoadBalancer()
+	if err != nil {
+		log.Printf("failed to get nic: %s\n", err)
+	}
+
+	responses := []autorest.Response{
+
+		Getvm.Response,
+		Getnic.Response,
+		GetAllVM.Response().Response,
+		Getlb.Response().Response,
+		GetAllNic.Response().Response,
+		PutVM,
+	}
 	for _, response := range responses {
 		if response.StatusCode != 200 {
 			log.Fatalf("Response did not return a StatusCode of 200. StatusCode: %d", response.StatusCode)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -14,177 +13,121 @@ import (
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/azure/auth"
-	"github.com/golang/glog"
 )
 
 // AzureClient This is an authorized client for Azure communication.
 type AzureClient struct {
+	config Config
 	compute.VirtualMachinesClient
-	compute.DisksClient
-	compute.VirtualMachineScaleSetsClient
 	network.InterfacesClient
+	network.LoadBalancersClient
 }
 
 // NewClient Initialized an authorized Azure client
-func NewClient(config Config) (client AzureClient) {
+func NewClient(configMode string) (client AzureClient) {
+	var configload Config
+	if configMode == "metadata" {
+		configload = LoadConfig()
+	} else if configMode == "environment" {
+		configload = EnvLoadConfig()
+	} else {
+		log.Print("Invalid config Mode")
+	}
+
 	client = AzureClient{
-		compute.NewVirtualMachinesClientWithBaseURI(config.EnvironmentEndpoint, config.SubscriptionID),
-		compute.NewDisksClientWithBaseURI(config.EnvironmentEndpoint, config.SubscriptionID),
-		compute.NewVirtualMachineScaleSetsClientWithBaseURI(config.EnvironmentEndpoint, config.SubscriptionID),
-		network.NewInterfacesClientWithBaseURI(config.EnvironmentEndpoint, config.SubscriptionID),
+		configload,
+		GetVMClient(configload),
+		GetNicClient(configload),
+		GetLbClient(configload),
 	}
-
-	// Authorizing with Managed Service Identity
-	err := os.Setenv("AZURE_ENVIRONMENT", config.AzureEnvironment)
-	if err != nil {
-		log.Panicf("Unable to set Azure environment: %v", err)
-	}
-	authorizer, err := auth.NewAuthorizerFromEnvironment()
-	if err == nil {
-		client.VirtualMachinesClient.Authorizer = authorizer
-		client.DisksClient.Authorizer = authorizer
-		client.VirtualMachineScaleSetsClient.Authorizer = authorizer
-		client.InterfacesClient.Authorizer = authorizer
-	}
-
-	client.VirtualMachinesClient.RetryAttempts = 1
-	client.DisksClient.RetryAttempts = 1
-	client.VirtualMachineScaleSetsClient.RetryAttempts = 1
-	client.InterfacesClient.RetryAttempts = 1
-
 	return
+}
+
+//GetVMClient return vmClient
+func GetVMClient(configload Config) compute.VirtualMachinesClient {
+	vmClient := compute.NewVirtualMachinesClient(configload.SubscriptionID)
+	a, err := auth.NewAuthorizerFromEnvironment()
+	if err != nil {
+		log.Panicf("failed to create authorizer from environment: %s\n", err)
+	}
+	vmClient.Authorizer = a
+	vmClient.AddToUserAgent("azure-request-limitometer-vm")
+	return vmClient
+}
+
+// GetNicClient return nic client
+func GetNicClient(configload Config) network.InterfacesClient {
+	nicClient := network.NewInterfacesClient(configload.SubscriptionID)
+	a, err := auth.NewAuthorizerFromEnvironment()
+	if err != nil {
+		log.Panicf("failed to create authorizer from environment: %s\n", err)
+	}
+	nicClient.Authorizer = a
+	nicClient.AddToUserAgent("azure-request-limitometer-Nic")
+	return nicClient
+}
+
+// GetLbClient return LB client
+func GetLbClient(configload Config) network.LoadBalancersClient {
+	lbClient := network.NewLoadBalancersClient(configload.SubscriptionID)
+	a, err := auth.NewAuthorizerFromEnvironment()
+	if err != nil {
+		log.Panicf("failed to create authorizer from environment: %s\n", err)
+	}
+	lbClient.Authorizer = a
+	lbClient.AddToUserAgent("azure-request-limitometer-Lb")
+	return lbClient
 }
 
 // GetVM Returns a VirtualMachine object.
-func (c AzureClient) GetVM(vmname string) (vm compute.VirtualMachine) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
-	defer cancel()
-
-	vm, err := c.VirtualMachinesClient.Get(ctx, Conf.ResourceGroup, vmname, compute.InstanceView)
-	if err != nil {
-		log.Panicf("failed to get VM: %v", err)
-	}
-
-	return
+func (az AzureClient) GetVM(ctx context.Context, nodename string) (compute.VirtualMachine, error) {
+	client := GetVMClient(Client.config)
+	return client.Get(ctx, Client.config.ResourceGroup, nodename, compute.InstanceView)
 }
 
-// GetAllVM Returns a ListResultPage of all VMs in the ResourceGroup of the Config
-func (c AzureClient) GetAllVM() (result compute.VirtualMachineListResultPage) {
+// GetAllLoadBalancer return info on a loadbalancer
+func (az AzureClient) GetAllLoadBalancer() (network.LoadBalancerListResultPage, error) {
+	lbClient := GetLbClient(Client.config)
 	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
 	defer cancel()
-
-	result, err := c.VirtualMachinesClient.List(ctx, Conf.ResourceGroup)
-	if err != nil {
-		log.Panicf("failed to get all VMs: %v", err)
-	}
-
-	return
-}
-
-// PutVM returns the Virtual Machine object
-func (c AzureClient) PutVM(vmname string) (res autorest.Response) {
-	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
-	defer cancel()
-
-	node := c.GetVM(vmname)
-
-	req, err := c.VirtualMachinesClient.CreateOrUpdatePreparer(ctx, Conf.ResourceGroup, vmname, node)
-	if err != nil {
-		err = autorest.NewErrorWithError(err, "compute.VirtualMachinesClient", "CreateOrUpdate", nil, "Failure preparing request")
-		log.Panic(err)
-	}
-
-	var result *http.Response
-	result, err = autorest.SendWithSender(c.VirtualMachinesClient, req,
-		azure.DoRetryWithRegistration(c.VirtualMachinesClient.Client))
-	err = autorest.Respond(result, azure.WithErrorUnlessStatusCode(http.StatusOK, http.StatusCreated))
-	if err != nil {
-		log.Panic(err)
-	}
-	res.Response = result
-
-	return
+	return lbClient.List(ctx, Client.config.ResourceGroup)
 }
 
 // GetNicFromVMName returns primary nic object based on vm name
-func (c AzureClient) GetNicFromVMName(vmName string) network.Interface {
-	return c.getNic(vmName, true)
+func (az AzureClient) GetNicFromVMName(nodename string) (network.Interface, error) {
+	return az.getNic(nodename, true)
 }
 
-// GetNicFromNicName returns nic object based on nic name
-func (c AzureClient) GetNicFromNicName(nicName string) network.Interface {
-	return c.getNic(nicName, false)
-}
-
-// Returns a Nic object.
-func (c AzureClient) getNic(resource string, vmResource bool) network.Interface {
-	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
-	defer cancel()
-
+// getNic return a nic object
+func (az AzureClient) getNic(resource string, vmResource bool) (network.Interface, error) {
+	client := GetNicClient(Client.config)
 	if vmResource {
-		resource = c.getNicNameFromVMName(resource)
+		resource = az.getNicNameFromVMName(resource)
 	}
-
-	nic, err := c.InterfacesClient.Get(ctx, Conf.ResourceGroup, resource, "")
-	if err != nil {
-		glog.Fatalf("failed to get Nic: %v", err)
-	}
-	return nic
-}
-
-// GetAllNics Returns a ListResultPage of all Interfaces in the ResourceGroup of the Config
-func (c AzureClient) GetAllNics() network.InterfaceListResultPage {
 	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
 	defer cancel()
-
-	result, err := c.InterfacesClient.List(ctx, Conf.ResourceGroup)
-	if err != nil {
-		glog.Fatalf("failed to get all Interfaces; check HTTP_PROXY: %v", err)
-	}
-
-	return result
+	return client.Get(ctx, Client.config.ResourceGroup, resource, "")
 }
 
-// PutNic returns the Interface object
-func (c AzureClient) PutNic(vmName string) autorest.Response {
-	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
-	defer cancel()
-
-	nicName := c.getNicNameFromVMName(vmName)
-
-	nic := c.GetNicFromNicName(nicName)
-
-	req, err := c.InterfacesClient.CreateOrUpdatePreparer(ctx, Conf.ResourceGroup, nicName, nic)
-	if err != nil {
-		err = autorest.NewErrorWithError(err, "compute.InterfacesClient", "CreateOrUpdatePreparer", nil, "Failure preparing request")
+// getNicNameFromVMName return a nicname from VM
+func (az AzureClient) getNicNameFromVMName(nodename string) string {
+	vm, error := az.GetVM(context.Background(), nodename)
+	if error != nil {
+		log.Panicf("failed to getVM: %v", error)
 	}
-
-	var resp *http.Response
-	resp, err = autorest.SendWithSender(c.InterfacesClient, req,
-		azure.DoRetryWithRegistration(c.InterfacesClient.Client))
-	err = autorest.Respond(resp, azure.WithErrorUnlessStatusCode(http.StatusOK, http.StatusCreated))
-	if err != nil {
-		glog.Fatal(err)
-	}
-
-	return autorest.Response{Response: resp}
-}
-
-func (c AzureClient) getNicNameFromVMName(vmName string) string {
-	vm := c.GetVM(vmName)
-
 	primaryNicID, err := getPrimaryInterfaceID(vm)
+
 	if err != nil {
-		glog.Fatalf("failed to getPrimaryInterfaceID from VM: %v", err)
+		log.Panicf("failed to getPrimaryInterfaceID from VM: %v", err)
 	}
 
 	nicName, err := getLastSegment(primaryNicID)
+
 	if err != nil {
-		glog.Fatalf("failed to nic name from nicID: %v", err)
+		log.Panicf("failed to nic name from nicID: %v", err)
 	}
 
 	return nicName
-
 }
 
 // This returns the full identifier of the primary NIC for the given VM.
@@ -209,6 +152,57 @@ func getLastSegment(ID string) (string, error) {
 	if len(name) == 0 {
 		return "", fmt.Errorf("resource name was missing from identifier")
 	}
-
 	return name, nil
+}
+
+// GetAllVM Returns a ListResultPage of all VMs in the ResourceGroup of the Config
+func (az AzureClient) GetAllVM() (result compute.VirtualMachineListResultPage) {
+	client := GetVMClient(Client.config)
+	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
+	defer cancel()
+	result, err := client.List(ctx, Client.config.ResourceGroup)
+	if err != nil {
+		log.Panicf("failed to get all VMs: %v", err)
+	}
+	return
+}
+
+// PutVM returns the Virtual Machine object
+func (az AzureClient) PutVM(nodename string) (res autorest.Response) {
+	client := GetVMClient(Client.config)
+	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
+	defer cancel()
+
+	node, err := az.GetVM(ctx, nodename)
+	if err != nil {
+		log.Panic(err)
+	}
+	req, err := client.CreateOrUpdatePreparer(ctx, Client.config.ResourceGroup, nodename, node)
+	if err != nil {
+		err = autorest.NewErrorWithError(err, "compute.VirtualMachineScaleSetsClient", "CreateOrUpdate", nil, "Failure preparing request")
+		return
+	}
+
+	var result *http.Response
+	result, err = autorest.SendWithSender(client, req,
+		azure.DoRetryWithRegistration(client.Client))
+	err = autorest.Respond(result, azure.WithErrorUnlessStatusCode(http.StatusOK, http.StatusCreated))
+	if err != nil {
+		log.Panic(err)
+	}
+	res.Response = result
+	return
+}
+
+// GetAllNics Returns a ListResultPage of all Interfaces in the ResourceGroup of the Config
+func (az AzureClient) GetAllNics() network.InterfaceListResultPage {
+	client := GetNicClient(Client.config)
+	ctx, cancel := context.WithTimeout(context.Background(), 6000*time.Second)
+	defer cancel()
+	result, err := client.List(ctx, Client.config.ResourceGroup)
+	if err != nil {
+		log.Panicf("failed to get all Interfaces; check HTTP_PROXY: %v", err)
+	}
+
+	return result
 }

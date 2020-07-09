@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cerence/azure-request-limitometer/internal/config"
 	"github.com/cerence/azure-request-limitometer/pkg/common"
 	"github.com/cerence/azure-request-limitometer/pkg/outputs"
 
@@ -16,20 +17,20 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
+var azureClient = common.Client
+
 const (
 	cliName        = "limitometer"
 	cliDescription = "Collects the number of remaining requests in Azure Resource Manager"
 	cliVersion     = "2.0.0"
 )
 
-var config = common.Conf
-var azureClient = common.Client
-
 var (
 	nodename     = flag.String("node", "", "Valid node in the resource group to create compute queries. Environment Variable: NODE_NAME")
 	target       = flag.String("output", "pushgateway", "Target output for the limitometer, supported values are: [influxdb|pushgateway]")
 	mode         = flag.String("mode", "oneshot", "Operational mode for limitometer, supported values are: [oneshot|service]")
 	pollInterval = flag.Int("poll-interval", 60, "Only for 'service' mode: Poll interval for refreshing metrics in seconds")
+	configSource = flag.String("config", "metadata", "To decide from where to load config, supported values are: [metadata|environment]")
 )
 
 func printUsage() {
@@ -74,9 +75,24 @@ func main() {
 	if exists {
 		*nodename = env
 	}
+	confval, exists := os.LookupEnv("LIMITOMETER_CONFIG")
+	if exists {
+		*configSource = confval
+	}
+
+	if strings.ToLower(*configSource) == "metadata" {
+		common.Client = common.NewClient("metadata")
+	} else if strings.ToLower(*configSource) == "environment" {
+		if err := config.ParseEnvironment(); err != nil {
+			log.Fatalf("failed to parse environment: %s\n", err)
+		}
+		common.Client = common.NewClient("environment")
+
+	} else {
+		glog.Exit("Did not provide a output through -output flag. Exiting.")
+	}
 
 	log.Printf("Starting limitometer with %s as target VM", *nodename)
-
 	if strings.ToLower(*mode) == "oneshot" {
 		log.Printf("Running in oneshot mode, will get remaining requests once and exit afterwards")
 		getValuesAndWriteToOutput(*nodename)
@@ -101,4 +117,5 @@ func main() {
 	} else {
 		glog.Exit("Did not provide a valid operations mode through -mode flag. Exiting.")
 	}
+
 }

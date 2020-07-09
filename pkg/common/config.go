@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+
+	"github.com/cerence/azure-request-limitometer/internal/config"
 
 	"github.com/Azure/go-autorest/autorest/azure"
 )
@@ -53,6 +56,12 @@ func LoadConfig() (config Config) {
 	if err != nil {
 		err = fmt.Errorf("Could not get environment object from metadata name: %v", err)
 	}
+
+	os.Setenv("AZURE_GROUP_NAME", m.ResourceGroupName)
+	os.Setenv("AZURE_LOCATION_DEFAULT", m.Location)
+	os.Setenv(" AZURE_SUBSCRIPTION_ID", m.SubscriptionID)
+	os.Setenv("AZURE_USE_DEVICEFLOW", "true")
+	os.Setenv("AZURE_SAMPLES_KEEP_RESOURCES", "true")
 	config = Config{
 		VMName:              m.Name,
 		SubscriptionID:      m.SubscriptionID,
@@ -60,6 +69,19 @@ func LoadConfig() (config Config) {
 		ResourceGroup:       m.ResourceGroupName,
 		AzureEnvironment:    m.Environment,
 		EnvironmentEndpoint: env.ResourceManagerEndpoint,
+	}
+
+	return
+}
+
+//EnvLoadConfig return object which load env config
+func EnvLoadConfig() (envconfig Config) {
+
+	envconfig = Config{
+
+		SubscriptionID: config.SubscriptionID(),
+		Location:       config.Location(),
+		ResourceGroup:  config.GroupName(),
 	}
 
 	return
